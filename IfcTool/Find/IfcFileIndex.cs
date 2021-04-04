@@ -8,13 +8,14 @@ using Xbim.Common.Metadata;
 using Xbim.Ifc;
 using Xbim.Ifc4.Interfaces;
 
-namespace IfcFind
+namespace IfcTool
 {
 	public class IfcFileInfo
 	{
 		// props saved
 		const int ThisCacheVersion = 1;
 		public DateTime LastWriteUTC { get; set; }
+		public string Error { get; set; } = null;
 		public string Schema { get; set; }
 		public List<string> Applications { get; set; }
 		public Dictionary<string, IfcClassInfo> Classes { get; set; }		
@@ -44,7 +45,7 @@ namespace IfcFind
 
 		public static string IndexExtension = "ifcfind";
 
-		FileInfo IndexFile
+		internal FileInfo IndexFile
 		{
 			get
 			{
@@ -54,7 +55,7 @@ namespace IfcFind
 			}
 		}
 
-		FileInfo BimFile
+		internal FileInfo BimFile
 		{
 			get
 			{
@@ -117,55 +118,79 @@ namespace IfcFind
 			return false;
 		}
 
+		public static IfcFileInfo Load(string indexFileName)
+		{
+			var infoName = indexFileName + "." + IndexExtension;
+			FileInfo f = new FileInfo(infoName);
+			if (!f.Exists)
+				return null;
+			return Load(f);
+		}
+
 		public static IfcFileInfo Load(FileInfo indexFile)
 		{
 			var jsonString = File.ReadAllText(indexFile.FullName);
 			var loaded = JsonSerializer.Deserialize<IfcFileInfo>(jsonString);
-			loaded.SetFileName(Program.BareFolderFileName(indexFile));
+			loaded.SetFileName(FindOptions.BareFolderFileName(indexFile));
 			return loaded;
 		}
 
-		private void GetFromBim()
+		internal void GetFromBim(bool omitContent = false)
 		{
-			Console.WriteLine($"Updating {BimFile.FullName}"); 
 			LastWriteUTC = BimFile.LastWriteTimeUtc;
-			using IfcStore st = IfcStore.Open(BimFile.FullName, null, null, null, Xbim.IO.XbimDBAccess.Read);
-			Schema = st.SchemaVersion.ToString();
 			CacheVersion = ThisCacheVersion;
-			var apps = st.Instances.OfType<IIfcApplication>();
-			Applications = new List<string>();
-			foreach (var app in apps)
+			if (omitContent)
+				return;
+			try
 			{
-				Applications.Add($"{app.ApplicationFullName}  {app.ApplicationIdentifier} {app.Version}");
-			}
-			// very low efficiency, just to have it quick and dirty.
-			// we're using expresstype because we might add more features later
-			var TypeAndCount = new Dictionary<ExpressType, int>();
-			foreach (var modelInstance in st.Instances)
-			{
-				var t = modelInstance.ExpressType;
-				if (TypeAndCount.ContainsKey(t))
-					TypeAndCount[t] += 1;
-				else
-					TypeAndCount.Add(t, 1);				
-			}
+				Console.WriteLine($"Updating {BimFile.FullName}");
+				using IfcStore st = IfcStore.Open(BimFile.FullName, null, null, null, Xbim.IO.XbimDBAccess.Read);
+				Schema = st.SchemaVersion.ToString();
+				
+				var apps = st.Instances.OfType<IIfcApplication>();
+				Applications = new List<string>();
+				foreach (var app in apps)
+				{
+					Applications.Add($"{app.ApplicationFullName}  {app.ApplicationIdentifier} {app.Version}");
+				}
+				// very low efficiency, just to have it quick and dirty.
+				// we're using expresstype because we might add more features later
+				var TypeAndCount = new Dictionary<ExpressType, int>();
+				foreach (var modelInstance in st.Instances)
+				{
+					var t = modelInstance.ExpressType;
+					if (TypeAndCount.ContainsKey(t))
+						TypeAndCount[t] += 1;
+					else
+						TypeAndCount.Add(t, 1);
+				}
 
-			var keys = TypeAndCount.Keys.ToList();
-			keys.Sort( // sort inverted
-					(x1, x2) => TypeAndCount[x2].CompareTo(TypeAndCount[x1])
-				);
-			Classes = new Dictionary<string, IfcClassInfo>();
-			foreach (var key in keys)
-			{
-				Classes.Add(key.ExpressName, new IfcClassInfo(TypeAndCount[key]));
+				var keys = TypeAndCount.Keys.ToList();
+				keys.Sort( // sort inverted
+						(x1, x2) => TypeAndCount[x2].CompareTo(TypeAndCount[x1])
+					);
+				Classes = new Dictionary<string, IfcClassInfo>();
+				foreach (var key in keys)
+				{
+					Classes.Add(key.ExpressName, new IfcClassInfo(TypeAndCount[key]));
+				}
+				st.Close();
+				// whatever happened with opening the file, replace the last write it had before reading it
+				
 			}
-			st.Close();
-			// whatever happened with opening the file, replace the last write it had before reading it
+			catch (Exception ex)
+			{
+				Error = ex.Message;
+			}
 			BimFile.LastWriteTimeUtc = LastWriteUTC;
 		}
 
-		public async System.Threading.Tasks.Task SaveAsJsonAsync(string destinationFile)
+		public async System.Threading.Tasks.Task SaveAsJsonAsync(string destinationFile = null)
 		{
+			if (destinationFile == null)
+				destinationFile = IndexFile.FullName;
+			if (destinationFile == null)
+				return;			
 			using FileStream createStream = File.Create(destinationFile);
 			await JsonSerializer.SerializeAsync(createStream, this);
 		}
@@ -176,6 +201,7 @@ namespace IfcFind
 			if (ifile.Exists)
 				ifile.Delete();
 		}
+
 	}
 
 	public class IfcClassInfo

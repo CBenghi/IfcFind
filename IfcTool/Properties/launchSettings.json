@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "IfcTool": {
+      "commandName": "Project",
+      "commandLineArgs": "find -d \"c:\\data\\ifc\" -s ifc2x3 -p class"
+    }
+  }
+}
