@@ -22,8 +22,10 @@ namespace IfcTool
 	internal class FindOptions
 	{
 		[Option('d', "directory", Required = true, HelpText = "IFC archive folder to search.")]
-		public string SearchDir { get; set; }
+		public IEnumerable<string> SearchDir { get; set; }
 
+		[Option('e', "errors", Required = false, HelpText = "Files that could not be parsed.")]
+		public bool Error { get; set; }
 
 		[Option('s', "schema", Required = false, Default = schema.any, HelpText = "Limits the search by schema version.")]
 		public schema Schema { get; set; }
@@ -33,7 +35,6 @@ namespace IfcTool
 
 		[Option('p', "classPatterns", Required = false, HelpText = "returns file with partial class match (includes).")]
 		public IEnumerable<string> PartClasses { get; set; }
-
 
 		internal static string BareFolderFileName(FileInfo x)
 		{
@@ -46,41 +47,71 @@ namespace IfcTool
 
 			IfcStore.ModelProviderFactory.UseHeuristicModelProvider();
 			Console.WriteLine("Executing Find.");
-			DirectoryInfo d = new DirectoryInfo(opts.SearchDir);
-			var fopts = new EnumerationOptions() { RecurseSubdirectories = true, IgnoreInaccessible = true, MatchCasing = MatchCasing.CaseInsensitive };
-			var files = new List<string>();
-			foreach (var extension in IfcFileInfo.Extensions)
+			var foundCount = 0;
+			var filesCount = 0;
+			foreach (var dirString in opts.SearchDir)
 			{
-				files.AddRange(d.GetFiles($"*.{extension}", fopts).Select(x =>
-					BareFolderFileName(x)
-					).ToList());
-			}
-			files = files.Distinct().ToList();
+				DirectoryInfo d = new DirectoryInfo(dirString);
+				if (!d.Exists)
+				{
+					Console.WriteLine($"Directory {dirString} not found.");
+					continue;
+				}
+				var fopts = new EnumerationOptions() { RecurseSubdirectories = true, IgnoreInaccessible = true, MatchCasing = MatchCasing.CaseInsensitive };
+				var files = new List<string>();
+				foreach (var extension in IfcFileInfo.Extensions)
+				{
+					files.AddRange(d.GetFiles($"*.{extension}", fopts).Select(x =>
+						BareFolderFileName(x)
+						).ToList());
+				}
+				files = files.Distinct().ToList();
 
-			// first we check the archive to make sure info is cached
-			var changeCount = 0;
-			foreach (var file in files)
-			{
-				last = file;
-				var changed = IfcFileInfo.Index(file);
-				if (changed)
-					changeCount++;
-			}
-			Console.WriteLine($"Updated {changeCount} files.");
+				// first we check the archive to make sure info is cached
+				var changeCount = 0;
+				foreach (var file in files)
+				{
+					last = file;
+					var changed = IfcFileInfo.Index(file);
+					if (changed)
+						changeCount++;
+				}
+				Console.WriteLine($"Updated {changeCount} files.");
 
-			// now execute search
-			List<IFindRequirement> reqs = new List<IFindRequirement>();
-			reqs.Add(new FindSchemaVersionRequirement(opts.Schema));
-			foreach (var cl in opts?.Classes)
-			{
-				reqs.Add(new FindExactClassRequirement(cl));
-			}
-			foreach (var cl in opts?.PartClasses)
-			{
-				reqs.Add(new FindPartClassRequirement(cl));
-			}
+				// now execute search
+				List<IFindRequirement> reqs = new List<IFindRequirement>();
+				reqs.Add(new FindSchemaVersionRequirement(opts.Schema));
+				foreach (var cl in opts?.Classes)
+				{
+					reqs.Add(new FindExactClassRequirement(cl));
+				}
+				foreach (var cl in opts?.PartClasses)
+				{
+					reqs.Add(new FindPartClassRequirement(cl));
+				}
+				if (opts.Error)
+				{
+					reqs.Add(new FindErrorRequirement());
+				}
 
-			var found = 0;
+
+				var Matching = GetMatching(files, reqs);
+
+				
+				foreach (var m in Matching)
+				{
+					foundCount++;
+					Console.WriteLine($"found: {m.BimFile.FullName}\t{m.EntityCount()}");
+				}
+				filesCount += files.Count;
+			}
+			Console.WriteLine($"total: {foundCount}/{filesCount}");
+
+			return Status.Ok;
+		}
+
+		private static IEnumerable<IfcFileInfo> GetMatching(List<string> files, List<IFindRequirement> reqs)
+		{
 			foreach (var file in files)
 			{
 				last = file;
@@ -94,14 +125,9 @@ namespace IfcTool
 				}
 				if (valid)
 				{
-					found++;
-					Console.WriteLine($"found: {t.BimFile.FullName}");
+					yield return t;
 				}
 			}
-
-			Console.WriteLine($"total: {found}/{files.Count}");
-
-			return Status.Ok;
 		}
 
 		private static string last;

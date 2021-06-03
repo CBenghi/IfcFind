@@ -1,0 +1,1 @@
+xcopy IfcTool\bin\Release\net5.0\publish\ C:\Data\Dev\Utils\bin\ /s

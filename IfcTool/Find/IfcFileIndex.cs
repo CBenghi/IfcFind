@@ -21,6 +21,18 @@ namespace IfcTool
 		public Dictionary<string, IfcClassInfo> Classes { get; set; }		
 		public int CacheVersion { get; set; }
 
+		public int EntityCount()
+		{
+			if (Classes == null)
+				return 0;
+			var ret = 0;
+			foreach (var classv in Classes.Values)
+			{
+				ret += classv.Count;
+			}
+			return ret;
+		}
+
 		// plumbing
 		private DirectoryInfo Directory;
 		private string BareName;

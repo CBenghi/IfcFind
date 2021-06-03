@@ -2,7 +2,7 @@
   "profiles": {
     "IfcTool": {
       "commandName": "Project",
-      "commandLineArgs": "find -d \"c:\\data\\ifc\" -s ifc2x3 -p class"
+      "commandLineArgs": "find -d \"c:\\data\\ifc\" \"C:\\Data\\Dev\\XbimPrivate\\Xbim.Xids.Verify\\Xbim.InformationSpecifications.Verify.Tests\\Files\" -c IfcRelAssociatesDocument"
     }
   }
 }

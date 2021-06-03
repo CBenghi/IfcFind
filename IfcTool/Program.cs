@@ -1,4 +1,6 @@
 ﻿using CommandLine;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -21,21 +23,14 @@ namespace IfcTool
 
 	class Program
 	{
-		
 		static int Main(string[] args)
 		{
-			
-
 			var t = Parser.Default.ParseArguments<FindOptions, ErrorCodeOptions>(args)
 			  .MapResult(
 				(FindOptions opts) => FindOptions.Run(opts),
 				(ErrorCodeOptions opts) => ErrorCodeOptions.Run(opts),
 				errs => Status.CommandLineError);
-			return (int)t;
-
-			
+			return (int)t;			
 		}
-
-
 	}
 }
