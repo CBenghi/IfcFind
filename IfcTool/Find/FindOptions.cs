@@ -4,9 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Xbim.Ifc;
+using Xbim.Ifc4.Interfaces;
 
 namespace IfcTool
 {
@@ -24,8 +23,17 @@ namespace IfcTool
 		[Option('d', "directory", Required = true, HelpText = "IFC archive folder to search.")]
 		public IEnumerable<string> SearchDir { get; set; }
 
+		[Option('b', "bare", Required = false, HelpText = "Just return file names.")]
+		public bool Bare { get; set; }
+
+		[Option('x', "preferXbim", Required = false, HelpText = "if xbim version is available use in report.")]
+		public bool PreferXbim { get; set; }
+
 		[Option('e', "errors", Required = false, HelpText = "Files that could not be parsed.")]
 		public bool Error { get; set; }
+
+		[Option('a', "applications", Required = false, HelpText = "Files produced by specified application regex.")]
+		public IEnumerable<string> Applications { get; set; }
 
 		[Option('s', "schema", Required = false, Default = schema.any, HelpText = "Limits the search by schema version.")]
 		public schema Schema { get; set; }
@@ -33,8 +41,11 @@ namespace IfcTool
 		[Option('c', "classes", Required = false, HelpText = "returns file with all specified classes.")]
 		public IEnumerable<string> Classes { get; set; }
 
-		[Option('p', "classPatterns", Required = false, HelpText = "returns file with partial class match (includes).")]
+		[Option('r', "classPatterns", Required = false, HelpText = "returns file with partial class match (uses contains function).")]
 		public IEnumerable<string> PartClasses { get; set; }
+
+		[Option('p', "propertyPatterns", Required = false, HelpText = "returns file with regex property match. (PsetName/PropName/PropType/PropValueType)")]
+		public IEnumerable<string> Properties { get; set; }
 
 		internal static string BareFolderFileName(FileInfo x)
 		{
@@ -46,9 +57,11 @@ namespace IfcTool
 			AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
 
 			IfcStore.ModelProviderFactory.UseHeuristicModelProvider();
-			Console.WriteLine("Executing Find.");
+			if (!opts.Bare)
+				Console.WriteLine("Executing Find.");
 			var foundCount = 0;
 			var filesCount = 0;
+			Dictionary<string, int> types = new Dictionary<string, int>();
 			foreach (var dirString in opts.SearchDir)
 			{
 				DirectoryInfo d = new DirectoryInfo(dirString);
@@ -76,41 +89,83 @@ namespace IfcTool
 					if (changed)
 						changeCount++;
 				}
-				Console.WriteLine($"Updated {changeCount} files.");
+				if (!opts.Bare)
+					Console.WriteLine($"Updated {changeCount} files.");
 
 				// now execute search
+				//
 				List<IFindRequirement> reqs = new List<IFindRequirement>();
 				reqs.Add(new FindSchemaVersionRequirement(opts.Schema));
 				foreach (var cl in opts?.Classes)
-				{
 					reqs.Add(new FindExactClassRequirement(cl));
-				}
-				foreach (var cl in opts?.PartClasses)
-				{
+				foreach (var cl in opts?.Properties)
 					reqs.Add(new FindPartClassRequirement(cl));
-				}
+				foreach (var cl in opts?.PartClasses)
+					reqs.Add(new FindPartClassRequirement(cl));
+				if (opts.Applications != null && opts.Applications.Any())
+					reqs.Add(new FindApplicationRequirement(opts.Applications));
 				if (opts.Error)
-				{
 					reqs.Add(new FindErrorRequirement());
-				}
-
-
-				var Matching = GetMatching(files, reqs);
-
 				
-				foreach (var m in Matching)
-				{
+				var Matching = GetMatching(files, reqs);
+				bool example = false;
+				foreach (var match in Matching)
+                {
+					// special action
+					if (example)
+						PerformActionRetainingTimeStamp(match, types, FindIIfcRelDefinesByTypeTypes);
+                    
+					// add count and report
 					foundCount++;
-					Console.WriteLine($"found: {m.BimFile.FullName}\t{m.EntityCount()}");
+					var repFile = opts.PreferXbim
+						? match.CachedBimFile.FullName
+						: match.StandardBimFile.FullName;
+
+					if (opts.Bare)
+						Console.WriteLine($"{repFile}");
+					else
+						Console.WriteLine($"found:\t{repFile}\t{match.EntityCount()}");
 				}
-				filesCount += files.Count;
+                filesCount += files.Count;  
 			}
-			Console.WriteLine($"total: {foundCount}/{filesCount}");
+			if (types != null)
+			{
+				foreach (var keyValuePair in types)
+				{
+					Console.WriteLine($"{keyValuePair.Key}\t{keyValuePair.Value}");
+				}
+			}
+			if (!opts.Bare)
+				Console.WriteLine($"total: {foundCount}/{filesCount}");
 
 			return Status.Ok;
 		}
 
-		private static IEnumerable<IfcFileInfo> GetMatching(List<string> files, List<IFindRequirement> reqs)
+        private static void PerformActionRetainingTimeStamp(IfcFileInfo m, Dictionary<string, int> types, Action<IfcFileInfo, Dictionary<string, int>> function)
+        {
+			// LastWriteTimeUtc is the value cached for checking last update
+			var prevValue = File.GetLastWriteTimeUtc(m.OldestBimFile.FullName);
+			function(m, types);
+			File.SetLastWriteTimeUtc(m.OldestBimFile.FullName, prevValue);
+		}
+
+        private static void FindIIfcRelDefinesByTypeTypes(IfcFileInfo m, Dictionary<string, int> types)
+		{
+            IfcStore s = IfcStore.Open(m.OldestBimFile.FullName, accessMode: Xbim.IO.XbimDBAccess.Read);
+            foreach (var entity in s.Instances.OfType<IIfcRelDefinesByType>())
+            {
+                foreach (var ro in entity.RelatedObjects)
+                {
+                    var str = $"{m.Schema}\t{entity.RelatingType.GetType().Name}\t{ro.GetType().Name}";
+                    if (types.ContainsKey(str))
+                        types[str] += 1;
+                    else
+                        types.Add(str, 1);
+                }
+            }
+        }
+
+        private static IEnumerable<IfcFileInfo> GetMatching(List<string> files, List<IFindRequirement> reqs)
 		{
 			foreach (var file in files)
 			{

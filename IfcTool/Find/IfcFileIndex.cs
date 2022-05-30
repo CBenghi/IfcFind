@@ -10,7 +10,7 @@ using Xbim.Ifc4.Interfaces;
 
 namespace IfcTool
 {
-	public class IfcFileInfo
+    public class IfcFileInfo
 	{
 		// props saved
 		const int ThisCacheVersion = 1;
@@ -19,6 +19,7 @@ namespace IfcTool
 		public string Schema { get; set; }
 		public List<string> Applications { get; set; }
 		public Dictionary<string, IfcClassInfo> Classes { get; set; }		
+		public Dictionary<string, IfcProperyInfo> Properties { get; set; }		
 		public int CacheVersion { get; set; }
 
 		public int EntityCount()
@@ -67,34 +68,71 @@ namespace IfcTool
 			}
 		}
 
-		internal FileInfo BimFile
+		internal IEnumerable<FileInfo> BimFiles
 		{
 			get
-			{
-				List<FileInfo> fls = new List<FileInfo>();
+            {
 				foreach (var ext in Extensions)
 				{
 					var filename = $"{BareName}.{ext}";
 					var full = Path.Combine(Directory.FullName, filename);
 					FileInfo f = new FileInfo(full);
 					if (f.Exists)
-						fls.Add(f);
+						yield return f;
 				}
+			}
+		}
+
+		internal FileInfo OldestBimFile
+		{
+			get
+			{
+				var fls = BimFiles.ToList();
+				if (!fls.Any())
+					return null;
+				return fls.OrderBy(x => x.LastWriteTime).FirstOrDefault();
+			}
+		}
+
+		internal FileInfo StandardBimFile
+        {
+			get
+			{
+				return BimFiles.FirstOrDefault();
+			}
+        }
+		internal FileInfo CachedBimFile
+		{
+			get
+			{
+				return BimFiles.LastOrDefault();
+			}
+		}
+
+
+		internal FileInfo NewestBimFile
+		{
+			get
+			{
+				var fls = BimFiles.ToList();
 				if (!fls.Any())
 					return null;
 				return fls.OrderByDescending(x => x.LastWriteTime).FirstOrDefault();
 			}
 		}
 
-		internal static bool Index(string file)
+		/// <returns>true if index was changed</returns>
+		internal static bool Index(string file, bool preventUpdate = false)
 		{
 			var t = From(file);
-			if (t.BimFile == null)
+			if (t == null)	
+				return false;
+			if (t.NewestBimFile == null)
 			{
-				t.RemoveIndex();
+				t.RemoveIndex(); // delete the index if the related bim file has been removed.
 				return false;
 			}
-			return t.CreateOrUpdate();
+			return t.CreateOrUpdate(preventUpdate);
 		}
 
 		private static IfcFileInfo From(string file)
@@ -102,25 +140,41 @@ namespace IfcTool
 			var t = new IfcFileInfo(file);
 			if (t.IndexFile.Exists)
 			{
-				return Load(t.IndexFile);
+                try
+                {
+					return Load(t.IndexFile);
+				}
+                catch (Exception)
+                {
+					if (t.IndexFile.Exists)
+						t.IndexFile.Delete(); // delete a failing file
+				}
+				
 			}
 			return t;
 		}
 
-		private bool CreateOrUpdate()
+		private bool CreateOrUpdate(bool preventUpdate)
 		{
-			if (BimFile == null)
+			if (NewestBimFile == null)
 				return false;
 			if (!IndexFile.Exists)
 			{
+				if (preventUpdate)
+					return false;
 				GetFromBim();
 				_ = SaveAsJsonAsync(IndexFile.FullName);
 				return true;
 			}
 			// if it existed then it's loaded... check it's up to date.
 			if (
-				CacheVersion != ThisCacheVersion
-				|| LastWriteUTC != BimFile.LastWriteTimeUtc
+				preventUpdate == false 
+				&&
+					(
+					CacheVersion != ThisCacheVersion
+					|| 
+					LastWriteUTC != NewestBimFile.LastWriteTimeUtc
+					)
 				)
 			{
 				GetFromBim();
@@ -149,14 +203,14 @@ namespace IfcTool
 
 		internal void GetFromBim(bool omitContent = false)
 		{
-			LastWriteUTC = BimFile.LastWriteTimeUtc;
+			LastWriteUTC = NewestBimFile.LastWriteTimeUtc;
 			CacheVersion = ThisCacheVersion;
 			if (omitContent)
 				return;
 			try
 			{
-				Console.WriteLine($"Updating {BimFile.FullName}");
-				using IfcStore st = IfcStore.Open(BimFile.FullName, null, null, null, Xbim.IO.XbimDBAccess.Read);
+				Console.WriteLine($"Updating {NewestBimFile.FullName}");
+				using IfcStore st = IfcStore.Open(NewestBimFile.FullName, null, null, null, Xbim.IO.XbimDBAccess.Read);
 				Schema = st.SchemaVersion.ToString();
 				
 				var apps = st.Instances.OfType<IIfcApplication>();
@@ -165,8 +219,12 @@ namespace IfcTool
 				{
 					Applications.Add($"{app.ApplicationFullName}  {app.ApplicationIdentifier} {app.Version}");
 				}
+
+				// classes
+
 				// very low efficiency, just to have it quick and dirty.
 				// we're using expresstype because we might add more features later
+				//
 				var TypeAndCount = new Dictionary<ExpressType, int>();
 				foreach (var modelInstance in st.Instances)
 				{
@@ -176,7 +234,6 @@ namespace IfcTool
 					else
 						TypeAndCount.Add(t, 1);
 				}
-
 				var keys = TypeAndCount.Keys.ToList();
 				keys.Sort( // sort inverted
 						(x1, x2) => TypeAndCount[x2].CompareTo(TypeAndCount[x1])
@@ -186,6 +243,35 @@ namespace IfcTool
 				{
 					Classes.Add(key.ExpressName, new IfcClassInfo(TypeAndCount[key]));
 				}
+
+
+				Properties = new Dictionary<string, IfcProperyInfo>();
+				// properties
+				if (false)
+				{
+					foreach (var modelProp in st.Instances.OfType<IIfcProperty>())
+					{
+						if (modelProp is IIfcPropertySingleValue psv)
+						{
+							string propName = psv.Name.Value.ToString();
+							var infor = (
+								psv.GetType().Name,
+								psv.NominalValue.GetType().Name
+								);
+							if (!psv.PartOfPset.Any())
+							{
+								RecordInformation(propName, infor, "");
+							}
+							else
+							{
+								foreach (var pset in psv.PartOfPset)
+								{
+									RecordInformation(propName, infor, pset.Name.Value.ToString());
+								}
+							}
+						}
+					}
+				}
 				st.Close();
 				// whatever happened with opening the file, replace the last write it had before reading it
 				
@@ -194,10 +280,19 @@ namespace IfcTool
 			{
 				Error = ex.Message;
 			}
-			BimFile.LastWriteTimeUtc = LastWriteUTC;
+			NewestBimFile.LastWriteTimeUtc = LastWriteUTC;
 		}
 
-		public async System.Threading.Tasks.Task SaveAsJsonAsync(string destinationFile = null)
+        private void RecordInformation(string propName, (string, string) infor, string psetName)
+        {
+            var CombinedName = psetName + "/" + propName;
+            if (Properties.TryGetValue(CombinedName, out var fnd))
+                fnd.TryAdd(infor);
+            else
+                Properties.Add(CombinedName, new IfcProperyInfo(infor));
+        }
+
+        public async System.Threading.Tasks.Task SaveAsJsonAsync(string destinationFile = null)
 		{
 			if (destinationFile == null)
 				destinationFile = IndexFile.FullName;
@@ -213,24 +308,6 @@ namespace IfcTool
 			if (ifile.Exists)
 				ifile.Delete();
 		}
-
-	}
-
-	public class IfcClassInfo
-	{
-		public IfcClassInfo()
-		{
-
-		}
-
-		public IfcClassInfo(int useCount)
-		{
-			// Name = expressName;
-			Count = useCount;
-		}
-
-		// public string Name { get; set; }
-		public int Count { get; set; }
 
 	}
 }
